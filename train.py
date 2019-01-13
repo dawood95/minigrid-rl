@@ -8,7 +8,7 @@ from algos.a2c import A2C
 parser = argparse.ArgumentParser()
 parser.add_argument('-e', '--env-name', default="MiniGrid-SimpleEnv-9x9-v0")
 parser.add_argument('--algo', default="a2c", choices=["a2c", "a2c-ppo", "a2r"])
-parser.add_argument('--epoch', default=100)
+parser.add_argument('--epoch', default=1000)
 parser.add_argument('--cuda', action="store_true", default=False)
 args = parser.parse_args()
 

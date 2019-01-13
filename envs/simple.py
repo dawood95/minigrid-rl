@@ -1,3 +1,4 @@
+
 from gym_minigrid.minigrid import MiniGridEnv, Grid, Goal
 from gym_minigrid.register import register
 

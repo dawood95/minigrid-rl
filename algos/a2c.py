@@ -49,7 +49,7 @@ class MiniGridNet(nn.Module):
         value = self.critic(self.hidden[0])
         if retain_hidden:
             self.hidden = old_hidden
-        return F.softmax(probs, 0), value
+        return F.softmax(probs, 1), value
 
     @staticmethod
     def preprocess(image, cuda=False):
@@ -62,7 +62,7 @@ class MiniGridNet(nn.Module):
         return image
 
 class A2C:
-    def __init__(self, env, learning_rate=1e-4, seq_len=10, cuda=False,
+    def __init__(self, env, learning_rate=1e-3, seq_len=100, cuda=False,
                  reward_scaling=1, discount_factor=0.99, grad_clip=1,
                  actor_coeff=1.0, critic_coeff=0.5, entropy_coeff=0.001):
         self.env       = env
@@ -115,7 +115,7 @@ class A2C:
                 # run model, get action and value
                 _obs = self.preprocess(obs["image"], self.cuda)
                 probs, value = self.model(_obs)
-
+                
                 # Choose action and step
                 dist = Categorical(probs)
                 action = dist.sample() # sample for exploration
@@ -190,6 +190,10 @@ class A2C:
                     if done:
                         break
 
+            logging['actor_loss'] /= num_steps
+            logging['critic_loss'] /= num_steps
+            logging['entropy_loss'] /= num_steps
+            
             print("Episode[%d/%d] [Steps: %d]: [Score: %.2f] [Loss(A,C,E): %.3f %.3f %.3f]"%
                   (episode+1,
                    num_episodes,
