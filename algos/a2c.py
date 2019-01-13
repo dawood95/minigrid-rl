@@ -60,14 +60,19 @@ class MiniGridNet(nn.Module):
         image = image.unsqueeze(0).float()
         return image
 
-class A2C():
-    def __init__(self, env, learning_rate=1e-4, seq_len=10, reward_scaling=1,
-                 discount_factor=0.99, grad_clip=1,
+class A2C:
+    def __init__(self, env, learning_rate=1e-4, seq_len=10, cuda=False,
+                 reward_scaling=1, discount_factor=0.99, grad_clip=1,
                  actor_coeff=1.0, critic_coeff=0.5, entropy_coeff=0.001):
         self.env       = env
         self.model     = MiniGridNet(env.action_space.n)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
+        if cuda:
+            self.model = self.model.cuda()
+            self.optimizer = self.optimizer.cuda()
+
+        self.cuda            = cuda
         self.preprocess      = MiniGridNet.preprocess
         self.seq_len         = seq_len
         self.reward_scaling  = reward_scaling
@@ -80,96 +85,111 @@ class A2C():
 
     def train(self, num_episodes=100):
         self.model.train()
-        total_score = 0
-        total_actor_loss = 0
-        total_critic_loss = 0
-        total_entropy_loss = 0
+
+        # Average info book-keeping
+        avg_score        = 0
+        avg_actor_loss   = 0
+        avg_critic_loss  = 0
+        avg_entropy_loss = 0
+        avg_steps        = 0
+
         for episode in range(num_episodes):
+            # Per episode book-keeping
             logging = {
                 'score': 0,
                 'actor_loss': 0,
                 'critic_loss': 0,
                 'entropy_loss': 0
             }
-            num_steps = 0
-            self.model.reset_hidden()
-            obs    = self.env.reset()
-            done   = False
-            seq_no = 0
-            log_probs = []
-            values = []
-            rewards = []
-            entropy = 0
-            while not done:
-                obs = self.preprocess(obs["image"])
-                probs, value = self.model(obs)
 
+            self.model.reset_hidden()
+            obs       = self.env.reset()
+            num_steps = 0
+            done      = False
+
+            entropies = []
+            log_probs = []
+            values    = []
+            rewards   = []
+            while not done:
+                # run model, get action and value
+                _obs = self.preprocess(obs["image"])
+                probs, value = self.model(_obs)
+
+                # Choose action and step
                 dist = Categorical(probs)
-                # Sample action from probs for exploration
-                action = dist.sample()
-                self.env.render('human')
+                action = dist.sample() # sample for exploration
                 obs, reward, done, _ = self.env.step(action)
                 reward = reward / self.reward_scaling
 
+                # Record all required values
+                entropies.append(dist.entropy())
                 log_probs.append(dist.log_prob(action))
-                entropy += dist.entropy().mean()
                 values.append(value)
                 rewards.append(reward)
 
-                seq_no += 1
                 num_steps += 1
-                if seq_no > self.seq_len or done:
+
+                if (num_steps % self.seq_len) == 0 or done:
                     # Back prop if seq_len reached or goal reached
-                    # NOTE: Ignoring one state in unrolling for simplicity
-                    #       If any weird training error, try fixing this.
                     if done:
                         R = 0
                     else:
-                        _, value = self.model(self.preprocess(obs["image"]), retain_hidden=True)
+                        _obs = self.preprocess(obs["image"])
+                        _, value = self.model(_obs, retain_hidden=True)
                         R = value.item()
                     R = torch.FloatTensor([[R]])
+                    if self.cuda: R = R.cuda()
                     returns = []
                     for i in reversed(range(len(rewards))):
                         R = rewards[i] + (self.discount_factor * R)
                         returns.insert(0, R)
 
-                    if len(returns) == 0:
-                        break
+                    if len(returns) == 0: break
 
                     # Convert list of tensors [(1, n)] ->  tensor (n)
                     log_probs = torch.cat(log_probs)
                     returns   = torch.cat(returns).detach()
                     values    = torch.cat(values)
+                    entopies  = torch.cat(entropies)
                     advantage = returns - values
 
-                    # -1 in actor because gradient ascent
-                    actor_loss  = -1 * (log_probs * advantage.detach()).mean()
-                    critic_loss = advantage.pow(2).mean()
+                    # -1 in actor, entropy because gradient ascent
+                    actor_loss  = -1 * (log_probs * advantage.detach())
+                    logging['actor_loss'] += actor_loss.sum().item()
+                    actor_loss = actor_loss.mean()
+
+                    critic_loss = advantage.pow(2)
+                    logging['critic_loss'] += critic_loss.sum().item()
+                    critic_loss = critic_loss.mean()
+
+                    entropy_loss = -1 * entropies
+                    logging['entropy_loss'] += entropies.sum().item()
+                    entropy_loss = entropy_loss.mean()
+
+                    logging['score'] += torch.Tensor(rewards).sum()
 
                     loss  = 0
                     loss += (self.actor_coeff * actor_loss)
                     loss += (self.critic_coeff * critic_loss)
-                    loss -= (self.entropy_coeff * entropy)
+                    loss += (self.entropy_coeff * entropy_loss)
 
                     self.optimizer.zero_grad()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm(self.model.parameters(), self.grad_clip)
+                    torch.nn.utils.clip_grad_norm(self.model.parameters(),
+                                                  self.grad_clip)
                     self.optimizer.step()
 
-                    logging['score'] += torch.Tensor(rewards).sum()
-                    logging['actor_loss'] += actor_loss.item()
-                    logging['critic_loss'] += critic_loss.item()
-                    logging['entropy_loss'] += entropy.item()
-
                     self.model.detach()
-                    seq_no = 0
                     log_probs = []
-                    values  = []
-                    rewards = []
-                    entropy = 0
+                    values    = []
+                    rewards   = []
+                    entropies = []
+
                     # if done, next episode
                     if done:
                         break
+
             print("Episode[%d/%d] [Steps: %d]: [Score: %.2f] [Loss(A,C,E): %.3f %.3f %.3f]"%
                   (episode+1,
                    num_episodes,
@@ -177,25 +197,75 @@ class A2C():
                    logging['score'],
                    logging['actor_loss'], logging['critic_loss'], logging['entropy_loss'])
             )
-            total_score += logging['score']
-            total_actor_loss += logging['actor_loss']
-            total_critic_loss += logging['critic_loss']
-            total_entropy_loss += logging['entropy_loss']
 
-        total_score /= num_episodes
-        total_actor_loss /= num_episodes
-        total_critic_loss /= num_episodes
-        total_entropy_loss /= num_episodes
+            avg_score        += logging['score']
+            avg_actor_loss   += logging['actor_loss']
+            avg_critic_loss  += logging['critic_loss']
+            avg_entropy_loss += logging['entropy_loss']
+            avg_steps        += num_steps
 
-        print("Train[%d episodes]: [Score: %.2f] [Loss(A,C,E): %.3f %.3f %.3f]"%
-              (num_episodes, total_score, total_actor_loss, total_critic_loss, total_entropy_loss))
+        avg_score        /= num_episodes
+        avg_actor_loss   /= num_episodes
+        avg_critic_loss  /= num_episodes
+        avg_entropy_loss /= num_episodes
+        avg_steps        /= num_episodes
+        print("Train[%d episodes]: [Score: %.2f]: [Steps: %.2f]: [Loss(A,C,E): %.3f %.3f %.3f]"%
+              (num_episodes, avg_score, avg_steps, avg_actor_loss, avg_critic_loss, avg_entropy_loss))
 
+    @torch.no_grad()
     def val(self, num_episodes=100):
-        pass
+        self.model.eval()
 
-if __name__ == "__main__":
-    # Test code
-    model = MiniGridNet()
-    inp = torch.zeros(1, 3, 7, 7)
-    out = model(inp)
-    print(out.shape)
+        # Average info book-keeping
+        avg_score        = 0
+        avg_actor_loss   = 0
+        avg_critic_loss  = 0
+        avg_entropy_loss = 0
+        avg_steps        = 0
+
+        for episode in range(num_episodes):
+            # Per episode book-keeping
+            self.model.reset_hidden()
+            obs       = self.env.reset()
+            num_steps = 0
+            done      = False
+
+            score = 0
+            while not done:
+                # run model, get action and value
+                _obs = self.preprocess(obs["image"])
+                probs, value = self.model(_obs)
+
+                # Choose action and step
+                dist = Categorical(probs)
+                action = dist.sample() # sample for exploration
+                obs, reward, done, _ = self.env.step(action)
+                reward = reward / self.reward_scaling
+
+                # Record all required values
+                score += reward
+                num_steps += 1
+
+            print("Episode[%d/%d] [Steps: %d]: [Score: %.2f]"%
+                  (episode+1,
+                   num_episodes,
+                   num_steps,
+                   score)
+            )
+
+            avg_score += score
+            avg_steps += num_steps
+
+        avg_score /= num_episodes
+        avg_steps /= num_episodes
+        print("Val[%d episodes]: [Score: %.2f]: [Steps: %.2f]"%(num_episodes, avg_score, avg_steps))
+
+    def checkpoint(self, step):
+        torch.save(
+            {
+                'step' : step,
+                'optim': self.optimizer.state_dict(),
+                'model': self.model.state_dict()
+            },
+            'epoch-%d.save'%step
+        )
