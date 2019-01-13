@@ -14,7 +14,7 @@ args = parser.parse_args()
 
 PROJECT_NAME = "unsupervised-advantage"
 
-def main(commit_id):
+def main():
     # Initialize environment
     env = gym.make(args.env_name)
 

@@ -33,7 +33,7 @@ class MiniGridNet(nn.Module):
     def reset_hidden(self):
         self.hidden = [torch.zeros(1, 128), torch.zeros(1, 128)]
         if next(self.lstm.parameters()).is_cuda:
-            for h in self.hidden: h.cuda()
+            self.hidden = [h.cuda() for h in self.hidden]
         return
 
     def detach(self):
@@ -49,15 +49,16 @@ class MiniGridNet(nn.Module):
         value = self.critic(self.hidden[0])
         if retain_hidden:
             self.hidden = old_hidden
-        return F.softmax(probs), value
+        return F.softmax(probs, 0), value
 
     @staticmethod
-    def preprocess(image):
+    def preprocess(image, cuda=False):
         image = np.array(image)
         image = image / 255.0
         image = torch.from_numpy(image)
         image = image.permute(2, 0, 1)
         image = image.unsqueeze(0).float()
+        if cuda: image = image.cuda()
         return image
 
 class A2C:
@@ -70,7 +71,6 @@ class A2C:
 
         if cuda:
             self.model = self.model.cuda()
-            self.optimizer = self.optimizer.cuda()
 
         self.cuda            = cuda
         self.preprocess      = MiniGridNet.preprocess
@@ -113,7 +113,7 @@ class A2C:
             rewards   = []
             while not done:
                 # run model, get action and value
-                _obs = self.preprocess(obs["image"])
+                _obs = self.preprocess(obs["image"], self.cuda)
                 probs, value = self.model(_obs)
 
                 # Choose action and step
@@ -135,7 +135,7 @@ class A2C:
                     if done:
                         R = 0
                     else:
-                        _obs = self.preprocess(obs["image"])
+                        _obs = self.preprocess(obs["image"], self.cuda)
                         _, value = self.model(_obs, retain_hidden=True)
                         R = value.item()
                     R = torch.FloatTensor([[R]])
@@ -151,7 +151,7 @@ class A2C:
                     log_probs = torch.cat(log_probs)
                     returns   = torch.cat(returns).detach()
                     values    = torch.cat(values)
-                    entopies  = torch.cat(entropies)
+                    entropies = torch.cat(entropies)
                     advantage = returns - values
 
                     # -1 in actor, entropy because gradient ascent
@@ -176,7 +176,7 @@ class A2C:
 
                     self.optimizer.zero_grad()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm(self.model.parameters(),
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(),
                                                   self.grad_clip)
                     self.optimizer.step()
 
@@ -233,7 +233,7 @@ class A2C:
             score = 0
             while not done:
                 # run model, get action and value
-                _obs = self.preprocess(obs["image"])
+                _obs = self.preprocess(obs["image"], self.cuda)
                 probs, value = self.model(_obs)
 
                 # Choose action and step
