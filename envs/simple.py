@@ -57,3 +57,12 @@ register(
     id='MiniGrid-SimpleEnv-15x15-v0',
     entry_point='envs:SimpleEnv15x15',
 )
+
+class SimpleEnv31x31(SimpleEnv):
+    def __init__(self):
+        super().__init__(size=31)
+
+register(
+    id='MiniGrid-SimpleEnv-31x31-v0',
+    entry_point='envs:SimpleEnv31x31',
+)

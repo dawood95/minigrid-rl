@@ -1,3 +1,4 @@
+import time
 import torch
 import numpy as np
 from torch import nn
@@ -64,10 +65,15 @@ class MiniGridNet(nn.Module):
 class A2C:
     def __init__(self, env, learning_rate=1e-3, seq_len=100, cuda=False,
                  reward_scaling=1, discount_factor=0.99, grad_clip=1,
-                 actor_coeff=1.0, critic_coeff=0.5, entropy_coeff=0.001):
+                 actor_coeff=1.0, critic_coeff=0.5, entropy_coeff=0.001,
+                 state_dict=None):
         self.env       = env
         self.model     = MiniGridNet(env.action_space.n)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+
+        if state_dict:
+            self.model.load_state_dict(state_dict['model'])
+            self.optimizer.load_state_dict(state_dict['optim'])
 
         if cuda:
             self.model = self.model.cuda()
@@ -115,7 +121,7 @@ class A2C:
                 # run model, get action and value
                 _obs = self.preprocess(obs["image"], self.cuda)
                 probs, value = self.model(_obs)
-                
+
                 # Choose action and step
                 dist = Categorical(probs)
                 action = dist.sample() # sample for exploration
@@ -193,7 +199,7 @@ class A2C:
             logging['actor_loss'] /= num_steps
             logging['critic_loss'] /= num_steps
             logging['entropy_loss'] /= num_steps
-            
+
             print("Episode[%d/%d] [Steps: %d]: [Score: %.2f] [Loss(A,C,E): %.3f %.3f %.3f]"%
                   (episode+1,
                    num_episodes,
@@ -263,6 +269,29 @@ class A2C:
         avg_score /= num_episodes
         avg_steps /= num_episodes
         print("Val[%d episodes]: [Score: %.2f]: [Steps: %.2f]"%(num_episodes, avg_score, avg_steps))
+
+    @torch.no_grad()
+    def visualize(self):
+        self.model.eval()
+        self.model.reset_hidden()
+        obs = self.env.reset()
+        while True:
+            renderer = self.env.render('human')
+
+            # run model, get action and value
+            _obs = self.preprocess(obs["image"], self.cuda)
+            probs, value = self.model(_obs)
+
+            # Choose action and step
+            dist = Categorical(probs)
+            action = dist.sample() # sample for exploration
+            obs, reward, done, _ = self.env.step(action)
+
+            time.sleep(0.1)
+            if renderer.window == None: break
+            if done:
+                obs = self.env.reset()
+                self.model.reset_hidden()
 
     def checkpoint(self, step):
         torch.save(
